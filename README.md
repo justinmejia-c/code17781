@@ -9,7 +9,7 @@ Across these projects, you’ll find examples of:
 
 ---
 
-## 🧠 About Me
+## About Me
 
 I’m a technically driven professional with a background in:
 - **System operations & multi-database environments**  
