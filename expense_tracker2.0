@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import sys
+from datetime import date, datetime
+import csv
+import calendar
+
+DATA_FILE = "expenses_data.json"
+
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {"expenses": [], "next_id": 1, "budgets": {}}
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return {"expenses": [], "next_id": 1, "budgets": {}}
+
+
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def add_expense(args):
+    data = load_data()
+
+    try:
+        amount = float(args.amount)
+    except ValueError:
+        print("Error: amount must be a number.")
+        sys.exit(1)
+
+    if amount <= 0:
+        print("Error: amount must be positive.")
+        sys.exit(1)
+
+    if args.date:
+        try:
+            expense_date = datetime.strptime(args.date, "%Y-%m-%d").date()
+        except ValueError:
+            print("Error: date must be in YYYY-MM-DD format.")
+            sys.exit(1)
+    else:
+        expense_date = date.today()
+
+    expense_id = data["next_id"]
+    data["next_id"] += 1
+
+    expense = {
+        "id": expense_id,
+        "date": expense_date.isoformat(),
+        "description": args.description,
+        "amount": amount,
+        "category": args.category or "Uncategorized",
+    }
+
+    data["expenses"].append(expense)
+    save_data(data)
+    print(f"Expense added successfully (ID: {expense_id})")
+
+
+def find_expense(data, expense_id):
+    for exp in data["expenses"]:
+        if exp["id"] == expense_id:
+            return exp
+    return None
+
+
+def update_expense(args):
+    data = load_data()
+    try:
+        expense_id = int(args.id)
+    except ValueError:
+        print("Error: id must be an integer.")
+        sys.exit(1)
+
+    expense = find_expense(data, expense_id)
+    if not expense:
+        print(f"Error: no expense found with ID {expense_id}.")
+        sys.exit(1)
+
+    changed = False
+
+    if args.description:
+        expense["description"] = args.description
+        changed = True
+
+    if args.amount is not None:
+        try:
+            amount = float(args.amount)
+        except ValueError:
+            print("Error: amount must be a number.")
+            sys.exit(1)
+        if amount <= 0:
+            print("Error: amount must be positive.")
+            sys.exit(1)
+        expense["amount"] = amount
+        changed = True
+
+    if args.category:
+        expense["category"] = args.category
+        changed = True
+
+    if args.date:
+        try:
+            new_date = datetime.strptime(args.date, "%Y-%m-%d").date()
+        except ValueError:
+            print("Error: date must be in YYYY-MM-DD format.")
+            sys.exit(1)
+        expense["date"] = new_date.isoformat()
+        changed = True
+
+    if not changed:
+        print("No fields to update. Use --description, --amount, --category, or --date.")
+        sys.exit(1)
+
+    save_data(data)
+    print(f"Expense updated successfully (ID: {expense_id})")
+
+
+def delete_expense(args):
+    data = load_data()
+    try:
+        expense_id = int(args.id)
+    except ValueError:
+        print("Error: id must be an integer.")
+        sys.exit(1)
+
+    before_count = len(data["expenses"])
+    data["expenses"] = [exp for exp in data["expenses"] if exp["id"] != expense_id]
+    after_count = len(data["expenses"])
+
+    if before_count == after_count:
+        print(f"Error: no expense found with ID {expense_id}.")
+        sys.exit(1)
+
+    save_data(data)
+    print("Expense deleted successfully")
+
+
+def list_expenses(args):
+    data = load_data()
+    expenses = data["expenses"]
+
+    if args.category:
+        expenses = [e for e in expenses if e.get("category") == args.category]
+
+    if args.month is not None:
+        try:
+            m = int(args.month)
+        except ValueError:
+            print("Error: month must be an integer between 1 and 12.")
+            sys.exit(1)
+        if not (1 <= m <= 12):
+            print("Error: month must be between 1 and 12.")
+            sys.exit(1)
+        current_year = date.today().year
+        filtered = []
+        for e in expenses:
+            d = date.fromisoformat(e["date"])
+            if d.year == current_year and d.month == m:
+                filtered.append(e)
+        expenses = filtered
+
+    if not expenses:
+        print("No expenses found.")
+        return
+
+    print("ID  Date        Description                 Category           Amount")
+    print("--  ----------  --------------------------  -----------------  ------")
+    for e in sorted(expenses, key=lambda x: x["id"]):
+        print(
+            f"{str(e['id']).ljust(3)} "
+            f"{e['date']}  "
+            f"{e['description'][:26].ljust(26)}  "
+            f"{e.get('category','')[:17].ljust(17)}  "
+            f"${e['amount']:.2f}"
+        )
+
+
+def summary(args):
+    data = load_data()
+    expenses = data["expenses"]
+
+    if args.month is not None:
+        try:
+            m = int(args.month)
+        except ValueError:
+            print("Error: month must be an integer between 1 and 12.")
+            sys.exit(1)
+        current_year = date.today().year
+        total = 0.0
+        for e in expenses:
+            d = date.fromisoformat(e["date"])
+            if d.year == current_year and d.month == m:
+                total += e["amount"]
+
+        month_name = calendar.month_name[m]
+        print(f"Total expenses for {month_name}: ${total:.2f}")
+
+        key = f"{current_year}-{m:02d}"
+        budget_val = data.get("budgets", {}).get(key)
+
+        if budget_val is not None:
+            if total > budget_val:
+                print(
+                    f"⚠ Budget exceeded for {month_name}! "
+                    f"Budget: ${budget_val:.2f}, Spent: ${total:.2f}"
+                )
+            else:
+                remaining = budget_val - total
+                print(
+                    f"Remaining budget: ${remaining:.2f} "
+                    f"(Budget: ${budget_val:.2f})"
+                )
+    else:
+        total = sum(e["amount"] for e in expenses)
+        print(f"Total expenses: ${total:.2f}")
+
+
+def set_or_show_budget(args):
+    data = load_data()
+    budgets = data.get("budgets", {})
+
+    try:
+        month = int(args.month)
+    except ValueError:
+        print("Error: month must be between 1 and 12.")
+        sys.exit(1)
+
+    if not (1 <= month <= 12):
+        print("Error: month must be between 1 and 12.")
+        sys.exit(1)
+
+    current_year = date.today().year
+    key = f"{current_year}-{month:02d}"
+
+    if args.amount is None:
+        if key in budgets:
+            print(
+                f"Budget for {calendar.month_name[month]} {current_year}: "
+                f"${budgets[key]:.2f}"
+            )
+        else:
+            print("No budget set yet.")
+        return
+
+    try:
+        amount = float(args.amount)
+    except ValueError:
+        print("Error: amount must be a number.")
+        sys.exit(1)
+
+    if amount <= 0:
+        print("Error: amount must be positive.")
+        sys.exit(1)
+
+    budgets[key] = amount
+    data["budgets"] = budgets
+    save_data(data)
+    print(f"Budget set for {calendar.month_name[month]}: ${amount:.2f}")
+
+
+def export_expenses(args):
+    data = load_data()
+    expenses = data["expenses"]
+
+    if not expenses:
+        print("No expenses to export.")
+        return
+
+    filename = args.file
+    try:
+        with open(filename, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["id", "date", "description", "amount", "category"])
+            for e in expenses:
+                writer.writerow(
+                    [e["id"], e["date"], e["description"], e["amount"], e["category"]]
+                )
+        print(f"Expenses exported to {filename}")
+    except OSError as e:
+        print(f"Error writing file: {e}")
+        sys.exit(1)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="expense-tracker",
+        description="Simple command-line expense tracker",
+    )
+
+    subparsers = parser.add_subparsers(dest="command")  # FIXED
+
+    # add
+    add_p = subparsers.add_parser("add", help="Add an expense")
+    add_p.add_argument("--description", "-d", required=True)
+    add_p.add_argument("--amount", "-a", required=True)
+    add_p.add_argument("--category", "-c")
+    add_p.add_argument("--date")
+    add_p.set_defaults(func=add_expense)
+
+    # update
+    upd_p = subparsers.add_parser("update", help="Update an expense")
+    upd_p.add_argument("--id", required=True)
+    upd_p.add_argument("--description")
+    upd_p.add_argument("--amount")
+    upd_p.add_argument("--category")
+    upd_p.add_argument("--date")
+    upd_p.set_defaults(func=update_expense)
+
+    # delete
+    del_p = subparsers.add_parser("delete", help="Delete an expense")
+    del_p.add_argument("--id", required=True)
+    del_p.set_defaults(func=delete_expense)
+
+    # list
+    list_p = subparsers.add_parser("list", help="List expenses")
+    list_p.add_argument("--category")
+    list_p.add_argument("--month")
+    list_p.set_defaults(func=list_expenses)
+
+    # summary
+    sum_p = subparsers.add_parser("summary", help="Show summary")
+    sum_p.add_argument("--month")
+    sum_p.set_defaults(func=summary)
+
+    # budget
+    bud_p = subparsers.add_parser("budget", help="Set or show budget")
+    bud_p.add_argument("--month", "-m", required=True)
+    bud_p.add_argument("--amount")
+    bud_p.set_defaults(func=set_or_show_budget)
+
+    # export
+    exp_p = subparsers.add_parser("export", help="Export to CSV")
+    exp_p.add_argument("--file", "-f", required=True)
+    exp_p.set_defaults(func=export_expenses)
+
+    return parser
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+
+    # FIXED: show help instead of crashing when command is missing
+    if not hasattr(args, "func"):
+        parser.print_help()
+        sys.exit(0)
+
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
